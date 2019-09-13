@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -8,6 +9,7 @@ using System.Net;
 using System.Xml.Linq;
 using System.Net.Http;
 using System.Reflection.Metadata.Ecma335;
+using System.Text;
 using System.Threading.Tasks;
 using ICSharpCode.SharpZipLib.Core;
 using ICSharpCode.SharpZipLib.Zip;
@@ -48,7 +50,7 @@ namespace DownloadSecXbrl
 
             var filesCompleted = new HashSet<string>();
 
-            for (int year = 2018; year < 2019; year++)
+            for (int year = 2007; year < 2020; year++)
             {
                 for (int month = 1; month < 13; month++)
                 {
@@ -69,7 +71,6 @@ namespace DownloadSecXbrl
 
                     if (data != null)
                     {
-
                         var doc = XDocument.Parse(data);
                         var all = from item in doc.Descendants()
                             where item.Name.LocalName == "item"
@@ -97,10 +98,10 @@ namespace DownloadSecXbrl
 
                         var outstanding = 0;
 
-                        var timer = new Timer(timerTick, null, 0, 1000);
-
-                        Parallel.ForEach(all, new ParallelOptions() {MaxDegreeOfParallelism = 1}, async (item) =>
+                        Parallel.ForEach(all, new ParallelOptions() {MaxDegreeOfParallelism = 20}, async (item) =>
                         {
+                            var logEntry = new StringBuilder();
+
                             var isIxbrl = item.inline.HasValue && item.inline.Value;
                             if (!isIxbrl)
                             {
@@ -108,7 +109,7 @@ namespace DownloadSecXbrl
 
                                 var endFolderName = Path.Combine(di.FullName, $"{item.cik}.{item.formType}.{item.fileNumber}");
 
-                                Console.WriteLine(endFolderName);
+                                logEntry.AppendLine(endFolderName);
 
                                 if (!Directory.Exists(endFolderName))
                                 {
@@ -133,7 +134,7 @@ namespace DownloadSecXbrl
                                             while (filesCompleted.Contains(newFilename))
                                             {
                                                 newFilename = filename + "." + ++incr;
-                                                Console.WriteLine($"\tDuplicate: {newFilename}");
+                                                logEntry.AppendLine($"\tDuplicate: {newFilename}");
                                             }
 
                                         filename = newFilename;
@@ -145,7 +146,7 @@ namespace DownloadSecXbrl
 
                                         if (!Directory.Exists(folderName))
                                         {
-                                            Console.WriteLine($"\tGet: {outstanding}:{requestCounter} - {item.url}");
+                                            logEntry.AppendLine($"\tGet: {outstanding}:{requestCounter} - {item.url}");
 
                                             while (outstanding > 50)
                                             {
@@ -172,12 +173,16 @@ namespace DownloadSecXbrl
                                             }
                                             catch (Exception ex)
                                             {
-                                                Console.WriteLine(ex.Message);
+                                                logEntry.AppendLine(ex.Message);
+                                            }
+                                            finally
+                                            {
+                                                Interlocked.Decrement(ref requestCounter);
                                             }
 
                                             if (xbrlData != null)
                                             {
-                                                Console.WriteLine($"\tWrite: {tempFileName}");
+                                                logEntry.AppendLine($"\tWrite: {tempFileName}");
                                                 await File.WriteAllBytesAsync(tempFileName, xbrlData).ContinueWith(
                                                     canDecompress =>
                                                     {
@@ -200,7 +205,7 @@ namespace DownloadSecXbrl
                                                                         // Optionally match entrynames against a selection list here to skip as desired.
                                                                         // The unpacked length is available in the zipEntry.Size property.
 
-                                                                        var buffer = new byte[16384];
+                                                                        var buffer = new byte[65536];
                                                                         var zipStream = zf.GetInputStream(zipEntry);
 
                                                                         // Manipulate the output filename here as desired.
@@ -214,7 +219,7 @@ namespace DownloadSecXbrl
 
                                                                         if (!File.Exists(fullZipToPath))
                                                                         {
-                                                                            Console.WriteLine(
+                                                                            logEntry.AppendLine(
                                                                                 $"\tExtract: {fullZipToPath}");
 
                                                                             // Unzip file in buffered chunks. This is just as fast as unpacking to a buffer the full size
@@ -233,11 +238,13 @@ namespace DownloadSecXbrl
                                                                     fs.Close();
                                                                 }
 
+                                                                logEntry.AppendLine($"\tDeleting: {tempFileName}");
+
                                                                 File.Delete(tempFileName);
                                                             }
                                                             catch (ZipException ze)
                                                             {
-                                                                Console.WriteLine(ze.Message);
+                                                                logEntry.AppendLine(ze.Message);
                                                             }
                                                         }
                                                     });
@@ -248,6 +255,7 @@ namespace DownloadSecXbrl
                                     }
                                 }
                             }
+                            logQueue.Enqueue(logEntry.ToString());
                         });
                     }
                 }
@@ -256,11 +264,29 @@ namespace DownloadSecXbrl
             return "Done";
         }
 
+        static ConcurrentQueue<string> logQueue = new ConcurrentQueue<string>();
+        private static bool Running = true;
+
         static void Main(string[] args)
         {
+            var logger = Task.Factory.StartNew(() =>
+            {
+                while (Running)
+                {
+                    while (logQueue.Count == 0)
+                        Thread.Sleep(100);
+
+                    if (logQueue.TryDequeue(out string logEntry))
+                    {
+                        Console.Write(logEntry);
+                    }
+                }
+            });
+
             var t = Download();
             var u = t.Result;
-            Console.WriteLine("Done");
+            Console.WriteLine(u);
+            Running = false;
             Console.ReadKey();
         }
     }
