@@ -44,7 +44,7 @@ namespace DownloadSecXbrl
 
             ServicePointManager.DefaultConnectionLimit = 100;
 
-            var rootFolder = "D:\\SecData\\xbrl";
+            var rootFolder = "/SecData/xbrl";
 
             var filesCompleted = new HashSet<string>();
 
@@ -53,8 +53,6 @@ namespace DownloadSecXbrl
                 for (int month = 1; month < 13; month++)
                 {
                     var folder = Path.Combine(rootFolder, year.ToString("0000"), month.ToString("00"));
-
-                    Console.WriteLine(folder);
 
                     //var di = Directory.CreateDirectory(folder);
 
@@ -101,13 +99,16 @@ namespace DownloadSecXbrl
 
                         var timer = new Timer(timerTick, null, 0, 1000);
 
-                        Parallel.ForEach(all, new ParallelOptions() {MaxDegreeOfParallelism = 20}, async (item) =>
+                        Parallel.ForEach(all, new ParallelOptions() {MaxDegreeOfParallelism = 1}, async (item) =>
                         {
                             var isIxbrl = item.inline.HasValue && item.inline.Value;
                             if (!isIxbrl)
                             {
-                                var endFolderName =
-                                    $"{folder}\\{item.cik}.{item.formType}.{item.fileNumber}";
+                                var di = new DirectoryInfo(folder);
+
+                                var endFolderName = Path.Combine(di.FullName, $"{item.cik}.{item.formType}.{item.fileNumber}");
+
+                                Console.WriteLine(endFolderName);
 
                                 if (!Directory.Exists(endFolderName))
                                 {
@@ -161,72 +162,87 @@ namespace DownloadSecXbrl
                                             Interlocked.Increment(ref requestCounter);
 
                                             var directoryInfo = Directory.CreateDirectory(folderName);
-                                            var response = await client.GetAsync(item.url);
-                                            var xbrlData = await response.Content.ReadAsByteArrayAsync();
 
-                                            Console.WriteLine($"\tWrite: {tempFileName}");
-                                            await File.WriteAllBytesAsync(tempFileName, xbrlData).ContinueWith(
-                                                canDecompress =>
-                                                {
-                                                    if (canDecompress.IsCompletedSuccessfully)
+                                            byte[] xbrlData = null;
+
+                                            try
+                                            {
+                                                var response = await client.GetAsync(item.url);
+                                                xbrlData = await response.Content.ReadAsByteArrayAsync();
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                Console.WriteLine(ex.Message);
+                                            }
+
+                                            if (xbrlData != null)
+                                            {
+                                                Console.WriteLine($"\tWrite: {tempFileName}");
+                                                await File.WriteAllBytesAsync(tempFileName, xbrlData).ContinueWith(
+                                                    canDecompress =>
                                                     {
-                                                        try
+                                                        if (canDecompress.IsCompletedSuccessfully)
                                                         {
-                                                            using (var fs = File.OpenRead(tempFileName))
+                                                            try
                                                             {
-                                                                var zf = new ZipFile(fs);
-                                                                foreach (ZipEntry zipEntry in zf)
+                                                                using (var fs = File.OpenRead(tempFileName))
                                                                 {
-                                                                    if (!zipEntry.IsFile)
+                                                                    var zf = new ZipFile(fs);
+                                                                    foreach (ZipEntry zipEntry in zf)
                                                                     {
-                                                                        continue; // Ignore directories
-                                                                    }
-
-                                                                    var entryFileName = zipEntry.Name;
-                                                                    // to remove the folder from the entry:- entryFileName = Path.GetFileName(entryFileName);
-                                                                    // Optionally match entrynames against a selection list here to skip as desired.
-                                                                    // The unpacked length is available in the zipEntry.Size property.
-
-                                                                    var buffer = new byte[16384];
-                                                                    var zipStream = zf.GetInputStream(zipEntry);
-
-                                                                    // Manipulate the output filename here as desired.
-                                                                    var fullZipToPath = Path.Combine(
-                                                                        directoryInfo.FullName,
-                                                                        entryFileName);
-                                                                    var directoryName =
-                                                                        Path.GetDirectoryName(fullZipToPath);
-                                                                    if (directoryName.Length > 0)
-                                                                        Directory.CreateDirectory(directoryName);
-
-                                                                    if (!File.Exists(fullZipToPath))
-                                                                    {
-                                                                        Console.WriteLine(
-                                                                            $"\tExtract: {fullZipToPath}");
-
-                                                                        // Unzip file in buffered chunks. This is just as fast as unpacking to a buffer the full size
-                                                                        // of the file, but does not waste memory.
-                                                                        // The "using" will close the stream even if an exception occurs.
-                                                                        using (var streamWriter =
-                                                                            File.Create(fullZipToPath))
+                                                                        if (!zipEntry.IsFile)
                                                                         {
-                                                                            StreamUtils.Copy(zipStream, streamWriter,
-                                                                                buffer);
+                                                                            continue; // Ignore directories
+                                                                        }
+
+                                                                        var entryFileName = zipEntry.Name;
+                                                                        // to remove the folder from the entry:- entryFileName = Path.GetFileName(entryFileName);
+                                                                        // Optionally match entrynames against a selection list here to skip as desired.
+                                                                        // The unpacked length is available in the zipEntry.Size property.
+
+                                                                        var buffer = new byte[16384];
+                                                                        var zipStream = zf.GetInputStream(zipEntry);
+
+                                                                        // Manipulate the output filename here as desired.
+                                                                        var fullZipToPath = Path.Combine(
+                                                                            directoryInfo.FullName,
+                                                                            entryFileName);
+                                                                        var directoryName =
+                                                                            Path.GetDirectoryName(fullZipToPath);
+                                                                        if (directoryName.Length > 0)
+                                                                            Directory.CreateDirectory(directoryName);
+
+                                                                        if (!File.Exists(fullZipToPath))
+                                                                        {
+                                                                            Console.WriteLine(
+                                                                                $"\tExtract: {fullZipToPath}");
+
+                                                                            // Unzip file in buffered chunks. This is just as fast as unpacking to a buffer the full size
+                                                                            // of the file, but does not waste memory.
+                                                                            // The "using" will close the stream even if an exception occurs.
+                                                                            using (var streamWriter =
+                                                                                File.Create(fullZipToPath))
+                                                                            {
+                                                                                StreamUtils.Copy(zipStream,
+                                                                                    streamWriter,
+                                                                                    buffer);
+                                                                            }
                                                                         }
                                                                     }
+
+                                                                    fs.Close();
                                                                 }
 
-                                                                fs.Close();
+                                                                File.Delete(tempFileName);
                                                             }
+                                                            catch (ZipException ze)
+                                                            {
+                                                                Console.WriteLine(ze.Message);
+                                                            }
+                                                        }
+                                                    });
+                                            }
 
-                                                            File.Delete(tempFileName);
-                                                        }
-                                                        catch (ZipException ze)
-                                                        {
-                                                            Console.WriteLine(ze.Message);
-                                                        }
-                                                    }
-                                                });
                                             Interlocked.Decrement(ref outstanding);
                                         }
                                     }
