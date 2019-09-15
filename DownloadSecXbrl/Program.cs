@@ -29,6 +29,8 @@ namespace DownloadSecXbrl
 
         static async Task<string> Download()
         {
+            var timer = new Timer(timerTick, null, 0, 1000);
+
             var fileNumber = 0;
             var tempFolder = Path.GetTempPath();
             foreach (var file in Directory.GetFiles(tempFolder, "SEC-XBRL-0*.zip"))
@@ -50,7 +52,7 @@ namespace DownloadSecXbrl
 
             var filesCompleted = new HashSet<string>();
 
-            for (int year = 2007; year < 2020; year++)
+            for (int year = 2019; year < 2020; year++)
             {
                 for (int month = 1; month < 13; month++)
                 {
@@ -155,12 +157,12 @@ namespace DownloadSecXbrl
 
                                             Interlocked.Increment(ref outstanding);
 
+                                            Interlocked.Increment(ref requestCounter);
+
                                             while (requestCounter > 9)
                                             {
-                                                Thread.Sleep(25);
+                                                Thread.Sleep(50);
                                             }
-
-                                            Interlocked.Increment(ref requestCounter);
 
                                             var directoryInfo = Directory.CreateDirectory(folderName);
 
@@ -169,24 +171,12 @@ namespace DownloadSecXbrl
                                             try
                                             {
                                                 var response = await client.GetAsync(item.url);
-                                                xbrlData = await response.Content.ReadAsByteArrayAsync();
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                logEntry.AppendLine(ex.Message);
-                                            }
-                                            finally
-                                            {
-                                                Interlocked.Decrement(ref requestCounter);
-                                            }
-
-                                            if (xbrlData != null)
-                                            {
-                                                logEntry.AppendLine($"\tWrite: {tempFileName}");
-                                                await File.WriteAllBytesAsync(tempFileName, xbrlData).ContinueWith(
-                                                    canDecompress =>
+                                                await response.Content.ReadAsByteArrayAsync().ContinueWith(
+                                                    (bytes) =>
                                                     {
-                                                        if (canDecompress.IsCompletedSuccessfully)
+                                                        logEntry.AppendLine($"\tWrite: {tempFileName}");
+                                                        File.WriteAllBytes(tempFileName, bytes.Result);
+                                                        if (bytes.IsCompletedSuccessfully)
                                                         {
                                                             try
                                                             {
@@ -232,6 +222,27 @@ namespace DownloadSecXbrl
                                                                                     streamWriter,
                                                                                     buffer);
                                                                             }
+
+                                                                            using (var db = new SecDataContext())
+                                                                            {
+                                                                                var cik = new Cik { CikNumber = int.Parse(item.cik), CikText = item.cik };
+                                                                                var ciks = 
+                                                                                    from rec in db.Ciks
+                                                                                    where rec.CikText == cik.CikText
+                                                                                          && rec.CikNumber == cik.CikNumber
+                                                                                    select rec;
+
+                                                                                if (!ciks.Any())
+                                                                                {
+                                                                                    db.Ciks.Add(cik);
+                                                                                    db.SaveChanges();
+                                                                                }
+
+                                                                                var filing = new Filing {  }
+
+                                                                                //db.Blogs.Add(blog);
+                                                                                db.SaveChanges();
+                                                                            }
                                                                         }
                                                                     }
 
@@ -248,6 +259,14 @@ namespace DownloadSecXbrl
                                                             }
                                                         }
                                                     });
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                logEntry.AppendLine(ex.Message);
+                                            }
+
+                                            if (xbrlData != null)
+                                            {
                                             }
 
                                             Interlocked.Decrement(ref outstanding);
